@@ -39,6 +39,8 @@ class Places365(Dataset):
 
         self.category_map = {cat: i for i, cat in enumerate(categories)}
 
+        self.n_class = 365
+
     def __len__(self):
         return len(self.data)
 
