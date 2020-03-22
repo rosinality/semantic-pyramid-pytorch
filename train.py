@@ -1,6 +1,5 @@
 import argparse
 import os
-import random
 
 import torch
 from torch import optim, nn
@@ -72,16 +71,16 @@ def train(args, dataset, gen, dis, g_ema, device):
         dataset,
         batch_size=args.batch,
         num_workers=4,
-        sampler=data_sampler(dataset, shuffle=True, distributed=args.distributed),
+        sampler=dist.data_sampler(dataset, shuffle=True, distributed=args.distributed),
         drop_last=True,
     )
 
     loader_iter = sample_data(loader)
 
-    pbar = range(args.iter)
+    pbar = range(args.start_iter, args.iter)
 
     if dist.get_rank() == 0:
-        pbar = tqdm(pbar, dynamic_ncols=True)
+        pbar = tqdm(pbar, initial=args.start_iter, dynamic_ncols=True)
 
     eps = 1e-8
 
@@ -100,7 +99,7 @@ def train(args, dataset, gen, dis, g_ema, device):
 
         real_pred = dis(real, class_id)
 
-        z = torch.randn(batch, args.dim_z, device=device)
+        z = torch.randn(args.batch, args.dim_z, device=device)
 
         fake = gen(z, class_id, features, masks)
 
@@ -112,13 +111,13 @@ def train(args, dataset, gen, dis, g_ema, device):
         d_loss.backward()
         d_optim.step()
 
-        z1 = torch.randn(batch, args.dim_z, device=device)
-        z2 = torch.randn(batch, args.dim_z, device=device)
+        z1 = torch.randn(args.batch, args.dim_z, device=device)
+        z2 = torch.randn(args.batch, args.dim_z, device=device)
 
         requires_grad(gen, True)
         requires_grad(dis, False)
 
-        masks = make_mask(real.shape[0], device, crop_prob)
+        masks = make_mask(real.shape[0], device, args.crop_prob)
 
         if args.distributed:
             gen.broadcast_buffers = True
@@ -141,8 +140,8 @@ def train(args, dataset, gen, dis, g_ema, device):
 
         for f_fake, f_real, m in zip(features_fake, features, masks):
             if f_fake.ndim == 4:
-                f_fake = F.max_pool2d(f_fake, 2)
-                f_real = F.max_pool2d(f_real, 2)
+                f_fake = F.max_pool2d(f_fake, 2, ceil_mode=True)
+                f_real = F.max_pool2d(f_real, 2, ceil_mode=True)
 
             r_loss = r_loss + F.l1_loss(f_fake, f_real)
 
@@ -168,7 +167,7 @@ def train(args, dataset, gen, dis, g_ema, device):
                 utils.save_image(
                     fake1,
                     f'sample/{str(i).zfill(6)}.png',
-                    nrow=int(batch ** 0.5),
+                    nrow=int(args.batch ** 0.5),
                     normalize=True,
                     range=(-1, 1),
                 )
@@ -193,10 +192,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--ckpt', type=str, default=None)
+    parser.add_argument('--iter', type=int, default=500000)
+    parser.add_argument('--start_iter', type=int, default=0)
     parser.add_argument('--batch', type=int, default=32)
     parser.add_argument('--dim_z', type=int, default=128)
     parser.add_argument('--dim_class', type=int, default=128)
-    parser.add_argument('--iter', type=int, default=500000)
     parser.add_argument('--rec_weight', type=float, default=0.1)
     parser.add_argument('--div_weight', type=float, default=0.1)
     parser.add_argument('--crop_prob', type=float, default=0.3)
@@ -229,6 +230,13 @@ if __name__ == '__main__':
     g_ema = Generator(args.n_class, args.dim_z, args.dim_class).to(device)
     accumulate(g_ema, gen, 0)
     dis = Discriminator(args.n_class).to(device)
+
+    if args.ckpt is not None:
+        ckpt = torch.load(args.ckpt, map_location=lambda storage, loc: storage)
+
+        gen.load_state_dict(ckpt['g'])
+        g_ema.load_state_dict(ckpt['g_ema'])
+        dis.load_state_dict(ckpt['d'])
 
     if args.distributed:
         gen = nn.parallel.DistributedDataParallel(
