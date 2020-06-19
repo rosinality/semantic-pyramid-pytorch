@@ -61,7 +61,7 @@ def train(args, dataset, gen, dis, g_ema, device):
         g_module = gen
         d_module = dis
 
-    vgg = VGGFeature('vgg16', [4, 9, 16, 23, 30], use_fc=True).eval().to(device)
+    vgg = VGGFeature("vgg16", [4, 9, 16, 23, 30], use_fc=True).eval().to(device)
     requires_grad(vgg, False)
 
     g_optim = optim.Adam(gen.parameters(), lr=1e-4, betas=(0, 0.999))
@@ -142,11 +142,18 @@ def train(args, dataset, gen, dis, g_ema, device):
             if f_fake.ndim == 4:
                 f_fake = F.max_pool2d(f_fake, 2, ceil_mode=True)
                 f_real = F.max_pool2d(f_real, 2, ceil_mode=True)
+                f_mask = F.max_pool2d(m, 2, ceil_mode=True)
 
-            r_loss = r_loss + F.l1_loss(f_fake, f_real)
+                r_loss = (
+                    r_loss
+                    + (F.l1_loss(f_fake, f_real, reduction="none") * f_mask).mean()
+                )
 
-        div_z = F.l1_loss(z1, z2, reduction='none').mean(1)
-        div_fake = F.l1_loss(fake1, fake2, reduction='none').mean((1, 2, 3))
+            else:
+                r_loss = r_loss + F.l1_loss(f_fake, f_real)
+
+        div_z = F.l1_loss(z1, z2, reduction="none").mean(1)
+        div_fake = F.l1_loss(fake1, fake2, reduction="none").mean((1, 2, 3))
 
         d_loss = (div_z / (div_fake + eps)).mean()
 
@@ -160,13 +167,13 @@ def train(args, dataset, gen, dis, g_ema, device):
 
         if dist.get_rank() == 0:
             pbar.set_description(
-                f'd: {d_loss.item():.4f}; g: {a_loss.item():.4f}; rec: {r_loss.item():.4f}; div: {d_loss.item():.4f}'
+                f"d: {d_loss.item():.4f}; g: {a_loss.item():.4f}; rec: {r_loss.item():.4f}; div: {d_loss.item():.4f}"
             )
 
             if i % 100 == 0:
                 utils.save_image(
                     fake1,
-                    f'sample/{str(i).zfill(6)}.png',
+                    f"sample/{str(i).zfill(6)}.png",
                     nrow=int(args.batch ** 0.5),
                     normalize=True,
                     range=(-1, 1),
@@ -175,37 +182,37 @@ def train(args, dataset, gen, dis, g_ema, device):
             if i % 10000 == 0:
                 torch.save(
                     {
-                        'args': args,
-                        'g_ema': g_ema.state_dict(),
-                        'g': g_module.state_dict(),
-                        'd': d_module.state_dict(),
+                        "args": args,
+                        "g_ema": g_ema.state_dict(),
+                        "g": g_module.state_dict(),
+                        "d": d_module.state_dict(),
                     },
-                    f'checkpoint/{str(i).zfill(6)}.pt',
+                    f"checkpoint/{str(i).zfill(6)}.pt",
                 )
 
 
-if __name__ == '__main__':
-    device = 'cuda'
+if __name__ == "__main__":
+    device = "cuda"
 
     torch.backends.cudnn.benchmark = True
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--ckpt', type=str, default=None)
-    parser.add_argument('--iter', type=int, default=500000)
-    parser.add_argument('--start_iter', type=int, default=0)
-    parser.add_argument('--batch', type=int, default=32)
-    parser.add_argument('--dim_z', type=int, default=128)
-    parser.add_argument('--dim_class', type=int, default=128)
-    parser.add_argument('--rec_weight', type=float, default=0.1)
-    parser.add_argument('--div_weight', type=float, default=0.1)
-    parser.add_argument('--crop_prob', type=float, default=0.3)
-    parser.add_argument('path', metavar='PATH')
+    parser.add_argument("--local_rank", type=int, default=0)
+    parser.add_argument("--ckpt", type=str, default=None)
+    parser.add_argument("--iter", type=int, default=500000)
+    parser.add_argument("--start_iter", type=int, default=0)
+    parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--dim_z", type=int, default=128)
+    parser.add_argument("--dim_class", type=int, default=128)
+    parser.add_argument("--rec_weight", type=float, default=0.1)
+    parser.add_argument("--div_weight", type=float, default=0.1)
+    parser.add_argument("--crop_prob", type=float, default=0.3)
+    parser.add_argument("path", metavar="PATH")
 
     args = parser.parse_args()
 
-    n_gpu = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
+    n_gpu = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     args.distributed = n_gpu > 1
 
     transform = transforms.Compose(
@@ -223,7 +230,7 @@ if __name__ == '__main__':
 
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
         dist.synchronize()
 
     gen = Generator(args.n_class, args.dim_z, args.dim_class).to(device)
@@ -234,9 +241,9 @@ if __name__ == '__main__':
     if args.ckpt is not None:
         ckpt = torch.load(args.ckpt, map_location=lambda storage, loc: storage)
 
-        gen.load_state_dict(ckpt['g'])
-        g_ema.load_state_dict(ckpt['g_ema'])
-        dis.load_state_dict(ckpt['d'])
+        gen.load_state_dict(ckpt["g"])
+        g_ema.load_state_dict(ckpt["g_ema"])
+        dis.load_state_dict(ckpt["d"])
 
     if args.distributed:
         gen = nn.parallel.DistributedDataParallel(
