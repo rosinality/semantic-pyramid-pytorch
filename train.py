@@ -150,7 +150,12 @@ def train(args, dataset, gen, dis, g_ema, device):
                 )
 
             else:
-                r_loss = r_loss + F.l1_loss(f_fake, f_real)
+                r_loss = (
+                    r_loss
+                    + (
+                        F.l1_loss(f_fake, f_real, reduction="none") * m.squeeze(-1)
+                    ).mean()
+                )
 
         div_z = F.l1_loss(z1, z2, reduction="none").mean(1)
         div_fake = F.l1_loss(fake1, fake2, reduction="none").mean((1, 2, 3))
