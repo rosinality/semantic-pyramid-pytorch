@@ -31,6 +31,37 @@ def g_ls_loss(real_predict, fake_predict):
     return loss
 
 
+def recon_loss(features_fake, features_real, masks):
+    r_loss = 0
+
+    for f_fake, f_real, m in zip(features_fake, features_real, masks):
+        if f_fake.ndim == 4:
+            f_fake = F.max_pool2d(f_fake, 2, ceil_mode=True)
+            f_real = F.max_pool2d(f_real, 2, ceil_mode=True)
+            f_mask = F.max_pool2d(m, 2, ceil_mode=True)
+
+            r_loss = (
+                r_loss + (F.l1_loss(f_fake, f_real, reduction="none") * f_mask).mean()
+            )
+
+        else:
+            r_loss = (
+                r_loss
+                + (F.l1_loss(f_fake, f_real, reduction="none") * m.squeeze(-1)).mean()
+            )
+
+    return r_loss
+
+
+def diversity_loss(z1, z2, fake1, fake2, eps=1e-8):
+    div_z = F.l1_loss(z1, z2, reduction="none").mean(1)
+    div_fake = F.l1_loss(fake1, fake2, reduction="none").mean((1, 2, 3))
+
+    d_loss = (div_z / (div_fake + eps)).mean()
+
+    return d_loss
+
+
 def accumulate(model1, model2, decay=0.999):
     par1 = dict(model1.named_parameters())
     par2 = dict(model2.named_parameters())
@@ -136,33 +167,10 @@ def train(args, dataset, gen, dis, g_ema, device):
         features_fake, fcs_fake = vgg(fake1)
         features_fake = features_fake + fcs_fake[1:]
 
-        r_loss = 0
+        r_loss = recon_loss(features_fake, features, masks)
+        div_loss = diversity_loss(z1, z2, fake1, fake2, eps)
 
-        for f_fake, f_real, m in zip(features_fake, features, masks):
-            if f_fake.ndim == 4:
-                f_fake = F.max_pool2d(f_fake, 2, ceil_mode=True)
-                f_real = F.max_pool2d(f_real, 2, ceil_mode=True)
-                f_mask = F.max_pool2d(m, 2, ceil_mode=True)
-
-                r_loss = (
-                    r_loss
-                    + (F.l1_loss(f_fake, f_real, reduction="none") * f_mask).mean()
-                )
-
-            else:
-                r_loss = (
-                    r_loss
-                    + (
-                        F.l1_loss(f_fake, f_real, reduction="none") * m.squeeze(-1)
-                    ).mean()
-                )
-
-        div_z = F.l1_loss(z1, z2, reduction="none").mean(1)
-        div_fake = F.l1_loss(fake1, fake2, reduction="none").mean((1, 2, 3))
-
-        d_loss = (div_z / (div_fake + eps)).mean()
-
-        g_loss = a_loss + args.rec_weight * r_loss + args.div_weight * d_loss
+        g_loss = a_loss + args.rec_weight * r_loss + args.div_weight * div_loss
 
         g_optim.zero_grad()
         g_loss.backward()
@@ -172,7 +180,7 @@ def train(args, dataset, gen, dis, g_ema, device):
 
         if dist.get_rank() == 0:
             pbar.set_description(
-                f"d: {d_loss.item():.4f}; g: {a_loss.item():.4f}; rec: {r_loss.item():.4f}; div: {d_loss.item():.4f}"
+                f"d: {d_loss.item():.4f}; g: {a_loss.item():.4f}; rec: {r_loss.item():.4f}; div: {div_loss.item():.4f}"
             )
 
             if i % 100 == 0:
